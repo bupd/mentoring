@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseIssueForm, parseCheckboxes, parseMentors } = require('../lib/parse');
+const { parseIssueForm, replaceIssueFormField, parseCheckboxes, parseMentors } = require('../lib/parse');
 
 test('parseIssueForm: splits ### sections into a label->value map', () => {
   const body = [
@@ -26,6 +26,26 @@ test('parseIssueForm: a heading with no following newline is skipped', () => {
 
 test('parseIssueForm: values are trimmed', () => {
   assert.equal(parseIssueForm('### A\n\n   spaced   ')['A'], 'spaced');
+});
+
+test('replaceIssueFormField: replaces one section without touching later sections', () => {
+  const body = [
+    '### CNCF Project', '', 'Kubernetes', '',
+    '### Mentors', '', 'Jane | @jane | jane@example.com | https://openprofile.dev/profile/jane', '',
+    '### Upstream Issue URL', '', 'https://github.com/org/repo/issues/1', '',
+  ].join('\n');
+  const out = replaceIssueFormField(body, 'Mentors', 'Jane | @jane | jane@example.com | jane');
+  assert.equal(parseIssueForm(out).Mentors, 'Jane | @jane | jane@example.com | jane');
+  assert.equal(parseIssueForm(out)['Upstream Issue URL'], 'https://github.com/org/repo/issues/1');
+});
+
+test('replaceIssueFormField: replaces the final section', () => {
+  const out = replaceIssueFormField(
+    '### CNCF Project\n\nKubernetes\n\n### Mentors\n\nold',
+    'Mentors',
+    'new',
+  );
+  assert.equal(parseIssueForm(out).Mentors, 'new');
 });
 
 test('parseCheckboxes: keeps only checked items, stripping the box', () => {
