@@ -4,6 +4,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   emailRe, urlRe, ghHandleRe, lfidRe,
+  isHttpUrl, extractLfidFromProfileUrl, extractLfxMentorId,
+  extractVerifiedLfidFromOpenProfileJson, githubHandleFromUrl, mentorGithubHandleFromJson,
+  mentorProfileUrls, normalizeMentorProfileUrls, openProfileCandidatesForGithub,
   validateMentors, validateUpstreamUrl,
 } = require('../lib/validate');
 
@@ -49,6 +52,120 @@ test('validateMentors: a malformed LFID (URL) flags "lfid-format"', () => {
     codes(validateMentors('Jane Doe | @janedoe | jane@example.com | https://openprofile.dev/profile/janedoe')),
     ['lfid-format'],
   );
+});
+
+test('isHttpUrl: accepts http(s) only', () => {
+  assert.equal(isHttpUrl('https://openprofile.dev/profile/janedoe'), true);
+  assert.equal(isHttpUrl('http://openprofile.dev/profile/janedoe'), true);
+  assert.equal(isHttpUrl('ftp://openprofile.dev/profile/janedoe'), false);
+  assert.equal(isHttpUrl('janedoe'), false);
+});
+
+test('extractLfidFromProfileUrl: extracts LFID from OpenProfile public profile URLs', () => {
+  assert.equal(extractLfidFromProfileUrl('https://openprofile.dev/profile/janedoe'), 'janedoe');
+  assert.equal(extractLfidFromProfileUrl('https://www.openprofile.dev/profile/jane.doe-1_x/'), 'jane.doe-1_x');
+});
+
+test('extractLfidFromProfileUrl: extracts LFID from fetched page content', () => {
+  assert.equal(
+    extractLfidFromProfileUrl(
+      'https://mentorship.lfx.linuxfoundation.org/profile/abc',
+      '<a href="https://openprofile.dev/profile/janedoe">OpenProfile</a>',
+    ),
+    'janedoe',
+  );
+  assert.equal(
+    extractLfidFromProfileUrl('https://example.com/profile/abc', '{"lfUsername":"janedoe"}'),
+    'janedoe',
+  );
+});
+
+test('extractLfidFromProfileUrl: returns empty for unknown or invalid values', () => {
+  assert.equal(extractLfidFromProfileUrl('https://openprofile.dev/profile/jane/doe'), '');
+  assert.equal(extractLfidFromProfileUrl('not a url', '<html></html>'), '');
+});
+
+test('extractLfxMentorId: extracts mentor IDs from public and API URLs', () => {
+  const id = '67d1c219-c704-4321-aa76-8471139fff5c';
+  assert.equal(extractLfxMentorId(`https://mentorship.lfx.linuxfoundation.org/mentor/${id}`), id);
+  assert.equal(extractLfxMentorId(`https://api.mentorship.lfx.linuxfoundation.org/mentors?id=${id}`), id);
+  assert.equal(extractLfxMentorId('https://example.com/mentor/67d1c219-c704-4321-aa76-8471139fff5c'), '');
+});
+
+test('githubHandleFromUrl: extracts a GitHub handle from profile URLs', () => {
+  assert.equal(githubHandleFromUrl('https://github.com/Vad1mo'), 'Vad1mo');
+  assert.equal(githubHandleFromUrl('https://github.com/bupd/mentoring'), 'bupd');
+  assert.equal(githubHandleFromUrl('https://example.com/bupd'), '');
+});
+
+test('mentorGithubHandleFromJson: extracts GitHub handle from LFX mentor API JSON', () => {
+  const mentorJson = JSON.stringify({
+    users: [{
+      profiles: [{
+        type: 'mentor',
+        profileLinks: { githubProfileLink: 'https://github.com/Vad1mo' },
+      }],
+    }],
+  });
+  assert.equal(mentorGithubHandleFromJson(mentorJson), 'Vad1mo');
+  assert.equal(mentorGithubHandleFromJson('{}'), '');
+});
+
+test('openProfileCandidatesForGithub: tries exact GitHub handle then lowercase fallback', () => {
+  assert.deepEqual(openProfileCandidatesForGithub('Vad1mo'), ['Vad1mo', 'vad1mo']);
+  assert.deepEqual(openProfileCandidatesForGithub('bupd'), ['bupd']);
+});
+
+test('extractVerifiedLfidFromOpenProfileJson: accepts LFID only when GitHub ID matches', () => {
+  assert.equal(
+    extractVerifiedLfidFromOpenProfileJson(
+      JSON.stringify({ basic: { Username: 'vad1mo', GithubID: 'Vad1mo' } }),
+      'Vad1mo',
+    ),
+    'vad1mo',
+  );
+  assert.equal(
+    extractVerifiedLfidFromOpenProfileJson(
+      JSON.stringify({ basic: { Username: 'somebody', GithubID: 'SomebodyElse' } }),
+      'Vad1mo',
+    ),
+    '',
+  );
+});
+
+test('mentorProfileUrls: finds URL values in the LFID column only', () => {
+  assert.deepEqual(
+    mentorProfileUrls(
+      'Jane Doe | @janedoe | jane@example.com | https://openprofile.dev/profile/janedoe\n' +
+      'Sam Lee | @samlee | sam@example.com | samlee\n' +
+      'Bad | @bad | https://openprofile.dev/profile/not-lfid',
+    ),
+    ['https://openprofile.dev/profile/janedoe'],
+  );
+});
+
+test('normalizeMentorProfileUrls: replaces resolved profile URLs with LFIDs', () => {
+  const raw = [
+    'Jane Doe | @janedoe | jane@example.com | https://openprofile.dev/profile/janedoe',
+    'Sam Lee | @samlee | sam@example.com | samlee',
+  ].join('\n');
+  assert.deepEqual(
+    normalizeMentorProfileUrls(raw, {
+      'https://openprofile.dev/profile/janedoe': 'janedoe',
+    }),
+    {
+      value: [
+        'Jane Doe | @janedoe | jane@example.com | janedoe',
+        'Sam Lee | @samlee | sam@example.com | samlee',
+      ].join('\n'),
+      replacements: [{ line: 1, url: 'https://openprofile.dev/profile/janedoe', lfid: 'janedoe' }],
+    },
+  );
+});
+
+test('normalizeMentorProfileUrls: leaves unresolved URLs unchanged', () => {
+  const raw = 'Jane Doe | @janedoe | jane@example.com | https://example.com/profile/janedoe';
+  assert.deepEqual(normalizeMentorProfileUrls(raw, {}), { value: raw, replacements: [] });
 });
 
 test('validateMentors: bad handle and email are both flagged on one line', () => {

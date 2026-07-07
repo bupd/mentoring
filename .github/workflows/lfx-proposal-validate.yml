@@ -25,19 +25,105 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             const _lib = (m) => require(path.join(process.env.GITHUB_WORKSPACE || process.cwd(), 'programs/lfx-mentorship/automation/lib', m));
-            const { parseIssueForm } = _lib('parse.js');
-            const { validateMentors, validateUpstreamUrl } = _lib('validate.js');
+            const { parseIssueForm, replaceIssueFormField } = _lib('parse.js');
+            const {
+              extractLfidFromProfileUrl,
+              extractLfxMentorId,
+              extractVerifiedLfidFromOpenProfileJson,
+              mentorGithubHandleFromJson,
+              mentorProfileUrls,
+              normalizeMentorProfileUrls,
+              openProfileCandidatesForGithub,
+              validateMentors,
+              validateUpstreamUrl,
+            } = _lib('validate.js');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
-            const body = context.payload.issue.body || '';
+            let body = context.payload.issue.body || '';
+
+            async function fetchProfilePage(url) {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 7000);
+              try {
+                const resp = await fetch(url, {
+                  redirect: 'follow',
+                  signal: controller.signal,
+                  headers: { 'user-agent': 'cncf-mentoring-lfx-proposal-validation' },
+                });
+                if (!resp.ok) return '';
+                return await resp.text();
+              } catch (e) {
+                console.log(`Could not fetch LF profile URL ${url}: ${e.message}`);
+                return '';
+              } finally {
+                clearTimeout(timeout);
+              }
+            }
+
+            async function resolveLfidFromProfileUrl(url) {
+              const direct = extractLfidFromProfileUrl(url);
+              if (direct) return direct;
+
+              const mentorId = extractLfxMentorId(url);
+              if (mentorId) {
+                const mentorJson = await fetchProfilePage(
+                  `https://api.mentorship.lfx.linuxfoundation.org/mentors?id=${encodeURIComponent(mentorId)}`
+                );
+                const githubHandle = mentorGithubHandleFromJson(mentorJson);
+                if (githubHandle) {
+                  for (const candidate of openProfileCandidatesForGithub(githubHandle)) {
+                    const profileJson = await fetchProfilePage(
+                      `https://lfx-open-profiles.s3.us-east-2.amazonaws.com/${encodeURIComponent(candidate)}.json`
+                    );
+                    const lfid = extractVerifiedLfidFromOpenProfileJson(profileJson, githubHandle);
+                    if (lfid) return lfid;
+                  }
+                }
+              }
+
+              return extractLfidFromProfileUrl(url, await fetchProfilePage(url));
+            }
 
             // ── Issue-form parser (lib/parse.js): splits on ### headings ──
-            const fields = parseIssueForm(body);
+            let fields = parseIssueForm(body);
             const get = (k) => (fields[k] || '').trim();
 
             const errors = [];
             const warnings = [];
             const passed = [];
+
+            // ── Normalize LF profile URLs in the Mentors LFID column ──
+            // Mentors often paste their public profile URL instead of the LF
+            // Username. Convert any resolvable URL to the LFID and edit the
+            // issue body before running validation, so the exported data stays
+            // LFID-only.
+            const mentorUrls = [...new Set(mentorProfileUrls(get('Mentors')))];
+            if (mentorUrls.length) {
+              const resolvedLfids = {};
+              for (const url of mentorUrls) {
+                const lfid = await resolveLfidFromProfileUrl(url);
+                if (lfid) resolvedLfids[url] = lfid;
+              }
+
+              const normalized = normalizeMentorProfileUrls(get('Mentors'), resolvedLfids);
+              if (normalized.replacements.length) {
+                body = replaceIssueFormField(body, 'Mentors', normalized.value);
+                await github.rest.issues.update({ owner, repo, issue_number, body });
+                fields = parseIssueForm(body);
+                passed.push(
+                  `Mentor LFIDs: replaced ${normalized.replacements.length} profile URL(s) with LF Username value(s)`
+                );
+              }
+
+              const unresolved = mentorUrls.filter((url) => !resolvedLfids[url]);
+              if (unresolved.length) {
+                warnings.push(
+                  'Could not resolve mentor LFID profile URL(s): ' +
+                  unresolved.map((url) => `\`${url}\``).join(', ') +
+                  '. Please replace each URL with the mentor LF Username.'
+                );
+              }
+            }
 
             // ── 1. CNCF Project ──
             const project = get('CNCF Project');

@@ -362,6 +362,9 @@ body:
         "Public profile URL" link, or under Settings -> Basic Information as
         "LF Username" on
         [openprofile.dev/edit/profile](https://openprofile.dev/edit/profile).
+        You may paste the mentor's public LF profile URL or LFX Mentorship
+        mentor URL in the LFID column; automation will replace supported
+        profile URLs with the LF Username.
 
 
         Don't have every mentor's LFID yet? You can still create the proposal,

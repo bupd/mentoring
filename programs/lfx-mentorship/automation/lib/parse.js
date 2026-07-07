@@ -24,6 +24,18 @@ function parseIssueForm(body) {
   return fields;
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function replaceIssueFormField(body, label, value) {
+  const re = new RegExp(
+    `(^### +${escapeRegExp(label)}\\s*\\n\\n?)([\\s\\S]*?)(?=^### +|\\s*$)`,
+    'm',
+  );
+  return body.replace(re, (_, prefix) => `${prefix}${value.trim() || '_No response_'}\n\n`);
+}
+
 // Return the labels of the checked items from a checkbox field's raw value.
 function parseCheckboxes(raw) {
   if (!raw) return [];
@@ -56,4 +68,4 @@ function parseMentors(raw) {
     .filter(Boolean);
 }
 
-module.exports = { parseIssueForm, parseCheckboxes, parseMentors };
+module.exports = { parseIssueForm, replaceIssueFormField, parseCheckboxes, parseMentors };
